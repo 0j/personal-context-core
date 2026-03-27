@@ -1,3 +1,4 @@
+pub mod anthropic;
 pub mod traits;
 
 use std::collections::HashMap;

@@ -17,7 +17,7 @@ use commands::{
     },
     memory::{list_memory_candidates, review_memory_candidate},
 };
-use llm::{DummyCloudAdapter, DummyLocalAdapter, ModelRegistry};
+use llm::{anthropic::AnthropicAdapter, DummyLocalAdapter, ModelRegistry};
 use state::{AppSettings, AppState, JobQueue};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -63,15 +63,17 @@ pub fn run() {
                 );
                 registry.register(
                     "cloud_fast",
-                    Arc::new(DummyCloudAdapter {
-                        model_name: "cloud_fast".to_string(),
-                    }),
+                    Arc::new(
+                        AnthropicAdapter::from_env("cloud_fast")
+                            .expect("failed to initialise AnthropicAdapter for cloud_fast"),
+                    ),
                 );
                 registry.register(
                     "cloud_reasoning",
-                    Arc::new(DummyCloudAdapter {
-                        model_name: "cloud_reasoning".to_string(),
-                    }),
+                    Arc::new(
+                        AnthropicAdapter::from_env("cloud_reasoning")
+                            .expect("failed to initialise AnthropicAdapter for cloud_reasoning"),
+                    ),
                 );
 
                 println!(
