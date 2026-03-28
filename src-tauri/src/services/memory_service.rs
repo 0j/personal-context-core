@@ -1,3 +1,4 @@
+use anyhow::Context;
 use sqlx::SqlitePool;
 
 use crate::models::memory::{
@@ -60,11 +61,16 @@ impl MemoryService {
     }
 
     /// Update the status of a memory candidate (approve / reject / defer).
+    /// When approved, materializes the candidate into the `memories` table.
     pub async fn review_candidate(
         &self,
         candidate_id: &str,
         new_status: CandidateStatus,
     ) -> anyhow::Result<()> {
+        if new_status == CandidateStatus::Approved {
+            self.materialize_candidate(candidate_id).await?;
+        }
+
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             "UPDATE memory_candidates SET status = ?, reviewed_at = ? WHERE id = ?",
@@ -74,6 +80,77 @@ impl MemoryService {
         .bind(candidate_id)
         .execute(&self.db)
         .await?;
+        Ok(())
+    }
+
+    /// Parse the candidate's JSON content and insert a confirmed `Memory` row.
+    async fn materialize_candidate(&self, candidate_id: &str) -> anyhow::Result<()> {
+        let row = sqlx::query_as::<_, CandidateRow>(
+            "SELECT id, kind, content, source_id, confidence, status, reviewed_at, created_at \
+             FROM memory_candidates WHERE id = ?",
+        )
+        .bind(candidate_id)
+        .fetch_one(&self.db)
+        .await
+        .context("candidate not found")?;
+
+        let candidate = row.into_candidate()?;
+
+        // The content field holds a MemoryCandidateRaw JSON object written by the
+        // extraction worker.  Fall back gracefully when individual fields are absent.
+        let payload: serde_json::Value = serde_json::from_str(&candidate.content)
+            .unwrap_or(serde_json::Value::Null);
+
+        let statement = payload
+            .get("statement")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&candidate.content)
+            .to_string();
+
+        let kind = payload
+            .get("memory_type")
+            .and_then(|v| v.as_str())
+            .and_then(|s| MemoryType::try_from(s).ok())
+            .unwrap_or(MemoryType::Fact);
+
+        let scope = payload
+            .get("temporal_scope")
+            .and_then(|v| v.as_str())
+            .and_then(|s| TemporalScope::try_from(s).ok())
+            .unwrap_or(TemporalScope::LongTerm);
+
+        let sensitivity = payload
+            .get("sensitivity")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Sensitivity::try_from(s).ok())
+            .unwrap_or(Sensitivity::Internal);
+
+        let salience_score = payload
+            .get("salience_score")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(candidate.confidence);
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let memory_id = uuid::Uuid::new_v4().to_string();
+
+        sqlx::query(
+            "INSERT INTO memories \
+             (id, kind, scope, sensitivity, content, salience_score, \
+              source_kind, source_id, entity_id, created_at, updated_at, expires_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 'conversation', NULL, NULL, ?, ?, NULL)",
+        )
+        .bind(&memory_id)
+        .bind(kind.as_str())
+        .bind(scope.as_str())
+        .bind(sensitivity.as_str())
+        .bind(&statement)
+        .bind(salience_score)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.db)
+        .await
+        .context("failed to insert materialized memory")?;
+
         Ok(())
     }
 }

@@ -7,6 +7,7 @@ pub struct SendChatTurnResponse {
     pub assistant_message: Message,
     pub route_decision: RouteDecision,
     pub model_used: String,
+    pub injected_memory_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

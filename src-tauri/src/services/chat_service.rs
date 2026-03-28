@@ -193,6 +193,7 @@ impl ChatService {
             assistant_message: assistant_msg,
             route_decision: decision,
             model_used: model_name,
+            injected_memory_count: ctx.memories.len(),
         })
     }
 

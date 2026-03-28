@@ -123,6 +123,8 @@ pub enum SourceKind {
     AssistantInference,
     UserEdit,
     Import,
+    /// Memory materialized from an approved candidate extracted from a conversation.
+    Conversation,
 }
 
 impl SourceKind {
@@ -132,6 +134,7 @@ impl SourceKind {
             SourceKind::AssistantInference => "assistant_inference",
             SourceKind::UserEdit => "user_edit",
             SourceKind::Import => "import",
+            SourceKind::Conversation => "conversation",
         }
     }
 }
@@ -145,6 +148,7 @@ impl TryFrom<&str> for SourceKind {
             "assistant_inference" => Ok(SourceKind::AssistantInference),
             "user_edit" => Ok(SourceKind::UserEdit),
             "import" => Ok(SourceKind::Import),
+            "conversation" => Ok(SourceKind::Conversation),
             other => Err(anyhow::anyhow!("unknown source kind: {}", other)),
         }
     }

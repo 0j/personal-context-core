@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use personal_context_core_lib::{
     llm::{anthropic::AnthropicAdapter, DummyLocalAdapter, ModelRegistry},
-    services::chat_service::ChatService,
+    models::memory::CandidateStatus,
+    services::{chat_service::ChatService, memory_service::MemoryService},
     state::{AppSettings, AppState, JobQueue},
 };
 use sqlx::{Row, sqlite::{SqliteConnectOptions, SqlitePoolOptions}};
@@ -321,5 +322,99 @@ async fn extraction_worker_writes_memory_candidates() {
         "expected at least 1 pending memory candidate, got {candidate_count}. \
          Check 'extraction summary' above — if proposed=0 all candidates were auto-rejected \
          (likely confidence_below_threshold). Check stderr for schema validation errors."
+    );
+}
+
+/// Approve a memory candidate → confirm it materialises into `memories` →
+/// send a second message whose keywords match the memory → assert
+/// `injected_memory_count > 0`.
+///
+/// The candidate is inserted directly (no extraction API call needed), so the
+/// only Anthropic call is the final `send_turn`.
+#[tokio::test]
+#[ignore = "requires ANTHROPIC_API_KEY"]
+async fn approved_candidate_appears_as_injected_memory() {
+    let app_state = build_state().await;
+    let svc = ChatService::new(Arc::clone(&app_state));
+    let mem_svc = MemoryService::new(app_state.db.clone());
+
+    let conv = svc
+        .create_conversation(Some("Memory injection test".to_string()))
+        .await
+        .expect("failed to create conversation");
+
+    // ── 1. Insert a memory candidate directly ─────────────────────────────
+    // The content mimics what ExtractionWorker writes (MemoryCandidateRaw JSON).
+    let candidate_id = uuid::Uuid::new_v4().to_string();
+    let content = serde_json::json!({
+        "candidate_type": "preference",
+        "memory_type": "preference",
+        "statement": "The user prefers Rust for systems programming projects.",
+        "summary": "Prefers Rust for systems programming",
+        "temporal_scope": "long_term",
+        "sensitivity": "public",
+        "confidence": 0.92,
+        "salience_score": 0.85,
+        "related_entity_names": [],
+        "source_refs": [],
+        "rationale": "Explicitly stated technology preference."
+    })
+    .to_string();
+
+    sqlx::query(
+        "INSERT INTO memory_candidates \
+         (id, kind, content, source_id, confidence, status, created_at, reviewed_at) \
+         VALUES (?, 'preference', ?, NULL, 0.92, 'pending', ?, NULL)",
+    )
+    .bind(&candidate_id)
+    .bind(&content)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&app_state.db)
+    .await
+    .expect("failed to insert test candidate");
+
+    // ── 2. Approve it — should materialise a row in `memories` ───────────
+    mem_svc
+        .review_candidate(&candidate_id, CandidateStatus::Approved)
+        .await
+        .expect("review_candidate failed");
+
+    let memory_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM memories WHERE source_kind = 'conversation'")
+            .fetch_one(&app_state.db)
+            .await
+            .expect("failed to count memories");
+
+    println!("memories after approval : {}", memory_count);
+    assert!(
+        memory_count >= 1,
+        "expected ≥1 memory after approval, got {memory_count}"
+    );
+
+    // ── 3. Send a message whose keywords overlap with the memory statement ─
+    // "Rust", "systems", "programming" are all in the statement; any one match
+    // is enough for retrieve_relevant to return the memory.
+    let resp = svc
+        .send_turn(
+            &conv.id,
+            "Which frameworks are best for Rust systems programming?",
+        )
+        .await
+        .expect("send_turn failed");
+
+    println!();
+    println!("┌─ memory injection test");
+    println!("│  model              : {}", resp.model_used);
+    println!("│  injected_memory_count : {}", resp.injected_memory_count);
+    println!("│  assistant (first 120 chars): {}",
+        &resp.assistant_message.content[..resp.assistant_message.content.len().min(120)]);
+    println!("└─────────────────────────────────────────────────");
+
+    assert!(
+        resp.injected_memory_count > 0,
+        "expected injected_memory_count > 0 but got {}. \
+         The memory was approved but retrieve_relevant returned nothing — \
+         check keyword overlap between the message and the memory statement.",
+        resp.injected_memory_count
     );
 }
