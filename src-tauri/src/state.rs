@@ -3,7 +3,10 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 
-use crate::llm::ModelRegistry;
+use crate::{
+    jobs::extraction_worker::{ExtractionJob, ExtractionWorker},
+    llm::ModelRegistry,
+};
 
 // ---------------------------------------------------------------------------
 // AppSettings
@@ -36,11 +39,21 @@ impl JobQueue {
     }
 
     /// Enqueue a background extraction job for the given message.
-    pub fn enqueue_extraction(&self, message_id: &str, conversation_id: &str) {
-        println!(
-            "[JobQueue] enqueued extraction job: message_id={} conversation_id={}",
-            message_id, conversation_id
-        );
+    pub fn enqueue_extraction(
+        &self,
+        message_id: &str,
+        conversation_id: &str,
+        state: Arc<AppState>,
+    ) {
+        let job = ExtractionJob {
+            conversation_id: conversation_id.to_string(),
+            message_ids: vec![message_id.to_string()],
+        };
+        tokio::spawn(async move {
+            if let Err(e) = ExtractionWorker::run_once(state, job).await {
+                eprintln!("[ExtractionWorker] error: {e:#}");
+            }
+        });
     }
 }
 

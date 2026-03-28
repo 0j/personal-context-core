@@ -13,18 +13,14 @@ use crate::{
     state::AppState,
 };
 
-fn make_chat_service(state: &AppState) -> ChatService {
-    ChatService::new(
-        state.db.clone(),
-        Arc::clone(&state.registry),
-        Arc::clone(&state.job_queue),
-    )
+fn make_chat_service(state: &Arc<AppState>) -> ChatService {
+    ChatService::new(Arc::clone(state))
 }
 
 #[tauri::command]
 pub async fn create_conversation(
     title: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Conversation, String> {
     make_chat_service(&state)
         .create_conversation(title)
@@ -34,7 +30,7 @@ pub async fn create_conversation(
 
 #[tauri::command]
 pub async fn list_conversations(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<Conversation>, String> {
     make_chat_service(&state)
         .list_conversations()
@@ -47,7 +43,7 @@ pub async fn append_message(
     conversation_id: String,
     role: String,
     content: String,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Message, String> {
     let role = MessageRole::try_from(role.as_str()).map_err(|e| e.to_string())?;
     let msg = Message::new(conversation_id, role, content);
@@ -62,7 +58,7 @@ pub async fn append_message(
 pub async fn send_chat_turn(
     conversation_id: String,
     user_content: String,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<SendChatTurnResponse, String> {
     make_chat_service(&state)
         .send_turn(&conversation_id, &user_content)
@@ -73,7 +69,7 @@ pub async fn send_chat_turn(
 #[tauri::command]
 pub async fn get_context_for_conversation(
     conversation_id: String,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<PromptContext, String> {
     make_chat_service(&state)
         .get_context_for_conversation(&conversation_id)

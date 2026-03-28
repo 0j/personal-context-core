@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(cargo install:*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)"
     ]
   }
 }

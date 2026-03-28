@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod db;
+pub mod jobs;
 pub mod llm;
 pub mod models;
 pub mod services;
@@ -80,12 +81,12 @@ pub fn run() {
                     "[PCC] Model registry ready: local_general, cloud_fast, cloud_reasoning"
                 );
 
-                AppState::new(
+                Arc::new(AppState::new(
                     pool,
                     Arc::new(registry),
                     Arc::new(JobQueue::new()),
                     AppSettings::default(),
-                )
+                ))
             });
 
             // manage() must be called on app, not app_handle

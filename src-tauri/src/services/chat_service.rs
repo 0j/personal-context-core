@@ -3,10 +3,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::{
-    llm::{
-        traits::ModelRequest,
-        ModelRegistry,
-    },
+    llm::traits::ModelRequest,
     models::{
         chat::SendChatTurnResponse,
         conversation::Conversation,
@@ -14,7 +11,7 @@ use crate::{
         prompt::PromptContext,
         routing::RouteDecision,
     },
-    state::JobQueue,
+    state::AppState,
 };
 
 use super::{
@@ -24,21 +21,17 @@ use super::{
 };
 
 pub struct ChatService {
-    db: SqlitePool,
-    registry: Arc<ModelRegistry>,
-    job_queue: Arc<JobQueue>,
+    state: Arc<AppState>,
     router: RoutingService,
     memory_svc: MemoryService,
     prompt_builder: PromptBuilder,
 }
 
 impl ChatService {
-    pub fn new(db: SqlitePool, registry: Arc<ModelRegistry>, job_queue: Arc<JobQueue>) -> Self {
-        let memory_svc = MemoryService::new(db.clone());
+    pub fn new(state: Arc<AppState>) -> Self {
+        let memory_svc = MemoryService::new(state.db.clone());
         Self {
-            db,
-            registry,
-            job_queue,
+            state,
             router: RoutingService::new(),
             memory_svc,
             prompt_builder: PromptBuilder::new(),
@@ -57,7 +50,7 @@ impl ChatService {
         .bind(&conv.title)
         .bind(&now)
         .bind(&now)
-        .execute(&self.db)
+        .execute(&self.state.db)
         .await?;
         Ok(conv)
     }
@@ -66,7 +59,7 @@ impl ChatService {
         let rows = sqlx::query_as::<_, ConversationRow>(
             "SELECT id, title, created_at, updated_at FROM conversations ORDER BY updated_at DESC",
         )
-        .fetch_all(&self.db)
+        .fetch_all(&self.state.db)
         .await?;
 
         rows.into_iter().map(ConversationRow::into_conversation).collect()
@@ -85,21 +78,22 @@ impl ChatService {
         .bind(&msg.content)
         .bind(&msg.model_used)
         .bind(msg.created_at.to_rfc3339())
-        .execute(&self.db)
+        .execute(&self.state.db)
         .await?;
 
-        // Bump conversation updated_at
         sqlx::query("UPDATE conversations SET updated_at = ? WHERE id = ?")
             .bind(msg.created_at.to_rfc3339())
             .bind(&msg.conversation_id)
-            .execute(&self.db)
+            .execute(&self.state.db)
             .await?;
 
         Ok(())
     }
 
+    /// Associated function so the extraction worker can call it without a
+    /// full ChatService instance.
     pub async fn recent_messages(
-        &self,
+        db: &SqlitePool,
         conversation_id: &str,
         limit: u32,
     ) -> anyhow::Result<Vec<Message>> {
@@ -112,7 +106,7 @@ impl ChatService {
         )
         .bind(conversation_id)
         .bind(limit)
-        .fetch_all(&self.db)
+        .fetch_all(db)
         .await?;
 
         rows.into_iter().map(MessageRow::into_message).collect()
@@ -142,7 +136,7 @@ impl ChatService {
         // 3. Persist route decision.
         self.save_route_decision(&decision).await?;
 
-        // 4. Retrieve relevant memories (simple keyword extraction from query).
+        // 4. Retrieve relevant memories.
         let keywords: Vec<&str> = user_content
             .split_whitespace()
             .filter(|w| w.len() > 4)
@@ -156,7 +150,7 @@ impl ChatService {
         let system_prompt = self.prompt_builder.build_system_prompt(&ctx);
 
         // 6. Call model adapter.
-        let adapter = self.registry.require(&model_name)?;
+        let adapter = self.state.registry.require(&model_name)?;
         let request = ModelRequest {
             model: model_name.clone(),
             system_prompt,
@@ -176,17 +170,24 @@ impl ChatService {
         self.create_message(&assistant_msg).await?;
 
         // 8. Log audit event.
-        self.log_event("chat_turn", &serde_json::json!({
-            "conversation_id": conversation_id,
-            "user_message_id": user_msg.id,
-            "assistant_message_id": assistant_msg.id,
-            "model": model_name,
-            "route_reason": decision.reason.as_str(),
-        })).await?;
+        self.log_event(
+            "chat_turn",
+            &serde_json::json!({
+                "conversation_id": conversation_id,
+                "user_message_id": user_msg.id,
+                "assistant_message_id": assistant_msg.id,
+                "model": model_name,
+                "route_reason": decision.reason.as_str(),
+            }),
+        )
+        .await?;
 
-        // 9. Enqueue background extraction job.
-        self.job_queue
-            .enqueue_extraction(&assistant_msg.id, conversation_id);
+        // 9. Spawn background extraction job.
+        self.state.job_queue.enqueue_extraction(
+            &assistant_msg.id,
+            conversation_id,
+            Arc::clone(&self.state),
+        );
 
         Ok(SendChatTurnResponse {
             assistant_message: assistant_msg,
@@ -201,8 +202,13 @@ impl ChatService {
         &self,
         conversation_id: &str,
     ) -> anyhow::Result<PromptContext> {
-        let messages = self.recent_messages(conversation_id, 20).await?;
-        let combined: String = messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join(" ");
+        let messages =
+            Self::recent_messages(&self.state.db, conversation_id, 20).await?;
+        let combined: String = messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         let keywords: Vec<&str> = combined
             .split_whitespace()
             .filter(|w| w.len() > 4)
@@ -231,21 +237,27 @@ impl ChatService {
         .bind(d.privacy_level.as_str())
         .bind(d.score)
         .bind(d.created_at.to_rfc3339())
-        .execute(&self.db)
+        .execute(&self.state.db)
         .await?;
         Ok(())
     }
 
-    async fn log_event(&self, kind: &str, payload: &serde_json::Value) -> anyhow::Result<()> {
+    async fn log_event(
+        &self,
+        kind: &str,
+        payload: &serde_json::Value,
+    ) -> anyhow::Result<()> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
-        sqlx::query("INSERT INTO events (id, kind, payload, created_at) VALUES (?, ?, ?, ?)")
-            .bind(&id)
-            .bind(kind)
-            .bind(payload.to_string())
-            .bind(&now)
-            .execute(&self.db)
-            .await?;
+        sqlx::query(
+            "INSERT INTO events (id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(kind)
+        .bind(payload.to_string())
+        .bind(&now)
+        .execute(&self.state.db)
+        .await?;
         Ok(())
     }
 }

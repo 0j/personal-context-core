@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://pcc.local/schemas/extraction.schema.json",
+  "title": "ExtractionOutput",
+  "type": "object",
+  "required": [
+    "entities_detected",
+    "relationships_detected",
+    "memory_candidates",
+    "contradictions_found",
+    "stale_candidates",
+    "confidence_notes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "entities_detected": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/EntityCandidate" }
+    },
+    "relationships_detected": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/RelationshipCandidate" }
+    },
+    "memory_candidates": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/MemoryCandidate" }
+    },
+    "contradictions_found": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/ContradictionCandidate" }
+    },
+    "stale_candidates": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/StaleCandidate" }
+    },
+    "confidence_notes": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "definitions": {
+    "SourceRef": {
+      "type": "object",
+      "required": ["message_id"],
+      "additionalProperties": false,
+      "properties": {
+        "message_id": { "type": "string" },
+        "excerpt":    { "type": "string" }
+      }
+    },
+    "EntityCandidate": {
+      "type": "object",
+      "required": ["entity_type", "canonical_name", "summary", "confidence", "source_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "entity_type":    { "type": "string" },
+        "canonical_name": { "type": "string" },
+        "summary":        { "type": "string" },
+        "confidence":     { "type": "number", "minimum": 0, "maximum": 1 },
+        "source_refs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/SourceRef" }
+        }
+      }
+    },
+    "RelationshipCandidate": {
+      "type": "object",
+      "required": ["from_name", "to_name", "relation_type", "confidence", "source_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "from_name":     { "type": "string" },
+        "to_name":       { "type": "string" },
+        "relation_type": { "type": "string" },
+        "confidence":    { "type": "number", "minimum": 0, "maximum": 1 },
+        "source_refs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/SourceRef" }
+        }
+      }
+    },
+    "MemoryCandidate": {
+      "type": "object",
+      "required": [
+        "candidate_type", "memory_type", "statement", "summary",
+        "temporal_scope", "sensitivity", "confidence", "salience_score",
+        "related_entity_names", "source_refs", "rationale"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_type":        { "type": "string" },
+        "memory_type":           { "type": "string" },
+        "statement":             { "type": "string" },
+        "summary":               { "type": "string" },
+        "temporal_scope":        { "type": "string" },
+        "sensitivity":           { "type": "string" },
+        "confidence":            { "type": "number", "minimum": 0, "maximum": 1 },
+        "salience_score":        { "type": "number", "minimum": 0, "maximum": 1 },
+        "related_entity_names":  { "type": "array", "items": { "type": "string" } },
+        "source_refs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/SourceRef" }
+        },
+        "rationale": { "type": "string" }
+      }
+    },
+    "ContradictionCandidate": {
+      "type": "object",
+      "required": ["existing_memory_id", "new_claim", "confidence", "source_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "existing_memory_id": { "type": "string" },
+        "new_claim":          { "type": "string" },
+        "confidence":         { "type": "number", "minimum": 0, "maximum": 1 },
+        "source_refs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/SourceRef" }
+        }
+      }
+    },
+    "StaleCandidate": {
+      "type": "object",
+      "required": ["memory_id", "reason", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "memory_id":  { "type": "string" },
+        "reason":     { "type": "string" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    }
+  }
+}
